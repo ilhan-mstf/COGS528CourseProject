@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <title>Automatic detection of AltLex</title>
+    <style type="text/css">
+    #text_content {
+        width: 500px;
+        white-space: pre-wrap;
+        border-top: solid 1px #aaa;
+        padding-top: 25px;
+    }
+
+    #discourseRelations {
+        width: 500px;
+    }
+
+    #summary {
+        background-color: #eee;
+    } 
+
+    .alt-lex {
+        background-color: yellow;
+        color: black;
+    }
+
+    .conjuction {
+        background-color: red;
+    }
+
+    .arg1 {
+        background-color: chartreuse;
+    }
+
+    .arg2 {
+        background-color: seagreen;
+        color: white;
+    }
+
+    footer {
+        padding: 15px 0;
+    }
+    </style>
+</head>
+
+<body>
+    <input type="file" id="files" name="file" />
+    <br>
+    <br>
+    <button id="analyzeText">Analyze Text</button>
+    <br>
+    <br>
+    <span id="summary"></span>
+    <br>
+    <br>
+    <div id="discourseRelations"></div>
+    <br>
+    <button id="export">Download</button>
+    <br>
+    <pre id="text_content"></pre>
+    <footer></footer>
+    <script type="text/javascript">
+    var altLexs = ['bu yüzden', 'bu arada', 'aynı zamanda', 'buna rağmen', 'bu sebeple'
+                , 'bir başka ifadeyle', 'bu amaçla', 'bu benzerliklerin yanında', 'bu çerçevede'
+                , 'bu dönemde', 'bu durumda', 'bu esnada', 'bu nedenle', 'bu noktada', 'bu sırada'
+                , 'buna göre', 'bundan sonra', 'buna karşılık', 'bunların sonucunda', 'öte yandan'
+                , 'o zamana değin', 'o zaman', 'o yüzden', 'o arada', 'nedeni bu olmalı'
+                , 'nedeni de bu olsa gerek', 'bunlara ek olarak', 'buna ek olarak'],
+        explicitConjuctions = ['ancak', 'lakin', 'fakat', 'ama', 'meğer'],
+        foundAltLexs,
+        foundDiscourseRelations,
+        altLexJson;
+
+    function readBlob(opt_startByte, opt_stopByte) {
+        if (checkFile()) {
+            var files = document.getElementById('files').files;
+            var file = files[0];
+            var start = parseInt(opt_startByte) || 0;
+            var stop = parseInt(opt_stopByte) || file.size - 1;
+
+            var reader = new FileReader();
+
+            foundAltLexs = {};
+            altLexJson = {"text": file.name, "labels": []};
+            foundDiscourseRelations = [];
+
+            // If we use onloadend, we need to check the readyState.
+            reader.onloadend = function(evt) {
+                if (evt.target.readyState == FileReader.DONE) { // DONE == 2
+                    document.getElementById('text_content').innerHTML = analyzeText(evt.target.result);
+                }
+                document.getElementById('summary').innerHTML = "Found: " + JSON.stringify(foundAltLexs);
+                document.getElementById('discourseRelations').innerHTML = foundDiscourseRelations.join("<br/><br/>");
+            };
+
+            var blob = file.slice(start, stop + 1);
+            reader.readAsText(blob);
+        }
+    }
+
+    function analyzeText(text) {
+        //return findAndHighlightAltLexs(cleanWhiteSpaces(text));
+        return findAndHighlightAltLexsWithArgs(cleanWhiteSpaces(text));
+    }
+
+    function cleanWhiteSpaces(text) {
+        return text.replace(/o  /g, "-")
+            .replace(/(^\s*)|(\s*$)/gi, "")
+            .replace(/[ ]{2,}/gi, "")
+            .replace(/(?:\r\n|\r|\n)/g, "\n\n");
+    }
+
+    function findAndHighlightAltLexs(text) {
+        for (var i = 0, ii = altLexs.length; i != ii; i++) {
+            text = replaceAll(text, altLexs[i], '<span class="alt-lex">' + altLexs[i] + '</span>');
+        }
+        return text;
+    }
+
+    function findAndHighlightAltLexsWithArgs(text) {
+        // Find paragraphs
+        var paragraphs = text.split(/\n\n/);
+        for (var k = 0, kk = paragraphs.length; k != kk; k++) {
+            // Find sentences
+            var sentences = paragraphs[k].match( /[^\.!\?]+[\.!\?]+/g);
+            if (sentences) {
+                for (var i = 0, ii = sentences.length; i != ii; i++) {
+                    sentences[i] = sentences[i].trim();
+
+                    // Find AltLexs
+                    var altLex = shouldILabelAsAltLex(sentences[i])
+                    if (altLex != null) {
+
+                        altLexJson['labels'].push({
+                            "arg1": sentences[i-1],
+                            "altLex": altLex,
+                            "conjuctions": findConjuctions(sentences[i]),
+                            "arg2": sentences[i]/*.replace(altLex, "")*/
+                        });
+
+                        sentences[i] = labelArg2(sentences[i], altLex);
+
+                        // TODO bir öncekini seçeyim mi seçmeyeyim mi?
+                        sentences[i - 1] = labelArg1(sentences[i - 1]);
+
+                        // Count
+                        if (foundAltLexs[altLex]) {
+                            foundAltLexs[altLex] = foundAltLexs[altLex] + 1;
+                        } else {
+                            foundAltLexs[altLex] = 1;                        
+                        }
+
+                        foundDiscourseRelations.push([sentences[i - 1] + " " + sentences[i]]);
+                    }    
+                }
+                paragraphs[k] = sentences.join(' ');
+            }
+        }
+        return paragraphs.join('\n\n');
+    }
+
+    function labelArg1(sentence) {
+        return '<span class="arg1">' + sentence + '</span>';
+    }
+
+    function labelArg2(sentence, altLex) {
+        return '<span class="arg2">' + labelConjuction(labelAltLex(sentence, altLex)) + '</span>';
+    }
+
+    function labelAltLex(sentence, altLex) {
+        return replaceAll(sentence, altLex, '<span class="alt-lex">' + altLex + '</span>');
+    }
+
+    function labelConjuction(sentence) {
+        for (var i = 0, ii = explicitConjuctions.length; i != ii; i++) {
+            var indexOfConjuctions = sentence.toLowerCase().indexOf(explicitConjuctions[i] + " ");
+            if (indexOfConjuctions != -1) {
+                sentence = replaceAll(sentence, explicitConjuctions[i], '<span class="conjuction">' + shouldICapatilize(indexOfConjuctions, explicitConjuctions[i]) + '</span>')
+            }
+        }
+        return sentence;
+    }
+
+    function findConjuctions(sentence) {
+        var conjuctions = [];
+        for (var i = 0, ii = explicitConjuctions.length; i != ii; i++) {
+            if (sentence.toLowerCase().indexOf(explicitConjuctions[i] + " ") != -1) {
+                conjuctions.push(explicitConjuctions[i]);
+            }
+        }
+        return conjuctions;
+    }
+
+    function shouldILabelAsAltLex(sentence) {
+        for (var i = 0, ii = altLexs.length; i != ii; i++) {
+            var indexOfAltLex = sentence.toLowerCase().indexOf(altLexs[i]);
+            if (indexOfAltLex != -1) {
+                /*
+                // Check that whether sentence has conjuction or not
+                for (var j = 0, jj = explicitConjuctions.length; j != jj; j++) {
+                    if (sentence.toLowerCase().indexOf(explicitConjuctions[j]) != -1) {
+                        // If there is a conjuction then label as not AltLex
+                        // TODO gene bunu göstermek isteyebilirim. bir yol düşünmek gerekli. belki farklı renk olabilir.
+                        return null;
+                    }
+                }
+                */
+                return shouldICapatilize(indexOfAltLex, altLexs[i]);
+            }
+        }
+        return null;
+    }
+
+    function escapeRegExp(str) {
+        return str.replace(/([.*+?^=!:${}()|\[\]\/\\])/g, "\\$1");
+    }
+
+    function replaceAll(str, find, replace) {
+        return str.replace(new RegExp(escapeRegExp(find), 'gi'), replace);
+    }
+
+    function shouldICapatilize(index, str) {
+        return index > 0 ? str : capitalizeFirstLetter(str);
+    }
+
+    function capitalizeFirstLetter(str) {
+        return str.charAt(0).toUpperCase() + str.slice(1);
+    }
+
+    function exportToJsonFile(jsonData) {
+        let dataStr = JSON.stringify(jsonData, null, 2);
+        let dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+        
+        let exportFileDefaultName = 'foundAltLexs.json';
+        
+        let linkElement = document.createElement('a');
+        linkElement.setAttribute('href', dataUri);
+        linkElement.setAttribute('download', exportFileDefaultName);
+        linkElement.click();
+    }
+
+    function checkFile() {
+        var files = document.getElementById('files').files;
+        if (!files.length) {
+            alert('Please select a file!');
+            return false;
+        }
+        return true;
+    }
+
+    document.getElementById('analyzeText').addEventListener('click', function(evt) {
+        if (evt.target.tagName.toLowerCase() == 'button') {
+            var startByte = evt.target.getAttribute('data-startbyte');
+            var endByte = evt.target.getAttribute('data-endbyte');
+            readBlob(startByte, endByte);
+        }
+    }, false);
+
+    document.getElementById('export').addEventListener('click', function(evt) {
+        if (checkFile()) {
+            altLexJson['stats'] = foundAltLexs;
+            exportToJsonFile(altLexJson);
+        }
+    }, false);
+    </script>
+</body>
+
+</html>
